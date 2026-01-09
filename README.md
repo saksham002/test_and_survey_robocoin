@@ -157,7 +157,3 @@ logs/
         ├── episode_000000_<camera>.mp4
         └── subtask_annotations.jsonl
 ```
-
-## License
-
-MIT
