@@ -54,7 +54,7 @@ Main script that surveys all RoboCOIN datasets and produces:
 - `survey_scripts/stats/subtask_length_quantiles.json` - Subtask length distribution (seconds)
 - `survey_scripts/stats/subtask_steps_quantiles.json` - Subtask length distribution (steps)
 - `survey_scripts/plots/` - Histograms of episode and subtask length distributions
-- `survey_scripts/examples/` - Example videos, episodes.jsonl, scene_annotations.jsonl, and summary.txt for selected repos
+- `survey_scripts/examples/` - Example videos, episodes.jsonl, scene_annotations.jsonl, tasks.jsonl, and summary.txt for selected repos
 
 **Features:**
 - Extracts robot type from repo_id
@@ -157,6 +157,7 @@ survey_scripts/
         ├── episode_000000_<camera>.mp4
         ├── episodes.jsonl
         ├── scene_annotations.jsonl
+        ├── tasks.jsonl
         └── summary.txt                # Sub-task and trajectory level annotations
 ```
 

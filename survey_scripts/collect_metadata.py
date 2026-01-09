@@ -154,22 +154,23 @@ def get_subtask_info(repo_id: str) -> Tuple[Optional[int], Dict[int, str]]:
         return None, {}
 
 
-def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[float], bool, List[Tuple[float, float, str]]]:
+def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[float], bool, List[Tuple[float, float, str]], Optional[int]]:
     """Extract subtask lengths from the first episode by downloading only episode_000000.parquet.
     
     Tracks multiple concurrent subtasks per row. When a subtask leaves the active set,
     its length (in steps) is recorded.
     
     Returns:
-        Tuple of (subtask_steps, subtask_lengths_seconds, has_concurrent_transition, subtask_timeline)
+        Tuple of (subtask_steps, subtask_lengths_seconds, has_concurrent_transition, subtask_timeline, task_index)
         where:
         - has_concurrent_transition is True if concurrent subtask transition was detected
         - subtask_timeline is a list of (start_time, end_time, subtask_names) for summary.txt
+        - task_index is the unique task_index value from the episode (or None if not found)
     """
     # First get the null subtask index and subtask mapping
     null_index, subtask_mapping = get_subtask_info(repo_id)
     if null_index is None:
-        return [], [], False, []
+        return [], [], False, [], None
     
     try:
         # Download only the first episode's parquet file
@@ -179,9 +180,21 @@ def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[flo
             repo_type="dataset"
         )
         
-        # Read only the subtask_annotation column
-        table = pq.read_table(parquet_path, columns = ["subtask_annotation"])
+        # Read subtask_annotation and task_index columns
+        table = pq.read_table(parquet_path, columns = ["subtask_annotation", "task_index"])
         subtask_annotations = table.column("subtask_annotation").to_pylist()
+        task_indices = table.column("task_index").to_pylist()
+        
+        # Extract and validate task_index
+        task_index_values = set()
+        for task_idx_array in task_indices:
+            if isinstance(task_idx_array, list) and len(task_idx_array) > 0:
+                task_index_values.add(task_idx_array[0])
+            elif task_idx_array is not None:
+                task_index_values.add(task_idx_array)
+        
+        assert len(task_index_values) <= 1, f"Multiple distinct task_index values found: {task_index_values}"
+        task_index = next(iter(task_index_values)) if task_index_values else None
         
         subtask_steps = []
         current_subtasks = set()  # Set of currently active subtasks
@@ -233,7 +246,7 @@ def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[flo
             current_subtasks = valid_subtasks
         
         # Don't forget the last interval for timeline
-        if prev_subtasks is not None and len(prev_subtasks) > 0:
+        if prev_subtasks is not None:
             start_time = interval_start_step / fps if fps > 0 else 0
             end_time = len(subtask_annotations) / fps if fps > 0 else 0
             sorted_indices = sorted(prev_subtasks)
@@ -262,10 +275,10 @@ def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[flo
         except Exception:
             pass  # Ignore cleanup errors
         
-        return subtask_steps, subtask_lengths_sec, has_concurrent_transition, subtask_timeline
+        return subtask_steps, subtask_lengths_sec, has_concurrent_transition, subtask_timeline, task_index
         
     except Exception:
-        return [], [], False, []
+        return [], [], False, [], None
 
 
 def select_camera_for_video(camera_names: List[str]) -> Optional[str]:
@@ -316,15 +329,17 @@ def save_example_video_and_annotations(
     repo_id: str, 
     camera_name: str, 
     examples_dir: Path,
-    subtask_timeline: List[Tuple[float, float, str]]
+    subtask_timeline: List[Tuple[float, float, str]],
+    task_index: Optional[int]
 ) -> None:
-    """Download and save video, subtask_annotations.jsonl, and summary.txt for a repo.
+    """Download and save video, annotation files, and summary.txt for a repo.
     
     Args:
         repo_id: Repository ID
         camera_name: Selected camera name
         examples_dir: Directory to save files to
         subtask_timeline: List of (start_time, end_time, subtask_names) for summary
+        task_index: Task index value from the episode
     """
     try:
         # Create repo-specific subdirectory (remove RoboCOIN_ prefix if present)
@@ -355,8 +370,7 @@ def save_example_video_and_annotations(
         except Exception as e:
             print(f"  Warning: Could not download video: {e}")
         
-        # Download and save episodes.jsonl, also get task description
-        task_description = "N/A"
+        # Download and save episodes.jsonl
         try:
             episodes_path = hf_hub_download(
                 repo_id=repo_id,
@@ -367,20 +381,34 @@ def save_example_video_and_annotations(
             episodes_dest = repo_dir / "episodes.jsonl"
             shutil.copy2(episodes_path, episodes_dest)
             print(f"  Saved episodes.jsonl to {episodes_dest}")
-            
-            # Get task description from episode_index = 0
-            with open(episodes_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    data = json.loads(line)
-                    if data.get("episode_index") == 0:
-                        tasks = data.get("tasks", [])
-                        if tasks and len(tasks) > 0:
-                            task_description = tasks[0]
-                        break
         except Exception as e:
             print(f"  Warning: Could not download episodes.jsonl: {e}")
+        
+        # Download and save tasks.jsonl, also get task description
+        task_description = "N/A"
+        if task_index is not None:
+            try:
+                tasks_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename="meta/tasks.jsonl",
+                    repo_type="dataset"
+                )
+                # Save the file
+                tasks_dest = repo_dir / "tasks.jsonl"
+                shutil.copy2(tasks_path, tasks_dest)
+                print(f"  Saved tasks.jsonl to {tasks_dest}")
+                
+                # Get task description using task_index
+                with open(tasks_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        data = json.loads(line)
+                        if data.get("task_index") == task_index:
+                            task_description = data.get("task", "N/A")
+                            break
+            except Exception as e:
+                print(f"  Warning: Could not download tasks.jsonl: {e}")
         
         # Download and save scene_annotations.jsonl, also get scene description
         scene_description = "N/A"
@@ -655,8 +683,9 @@ def main():
             # Extract subtask lengths from first episode
             has_concurrent_transition = False
             subtask_timeline = []
+            task_index = None
             try:
-                repo_subtask_steps, repo_subtask_lengths, has_concurrent_transition, subtask_timeline = extract_subtask_lengths(repo_id, global_fps)
+                repo_subtask_steps, repo_subtask_lengths, has_concurrent_transition, subtask_timeline, task_index = extract_subtask_lengths(repo_id, global_fps)
                 if repo_subtask_steps:
                     subtask_steps.extend(repo_subtask_steps)
                     subtask_lengths_seconds.extend(repo_subtask_lengths)
@@ -678,7 +707,7 @@ def main():
                 selected_camera = select_camera_for_video(camera_names)
                 if selected_camera:
                     print(f"  Saving example video and annotations (camera: {selected_camera})...")
-                    save_example_video_and_annotations(repo_id, selected_camera, EXAMPLES_DIR, subtask_timeline)
+                    save_example_video_and_annotations(repo_id, selected_camera, EXAMPLES_DIR, subtask_timeline, task_index)
                     examples_saved_count += 1
                 else:
                     print(f"  Warning: Could not select camera for video, skipping example save")
