@@ -106,13 +106,15 @@ huggingface_hub
 torch
 torchvision
 lerobot
+tensorflow
+dlimp
 ```
 
 ## Installation
 
 ```bash
 pip install numpy matplotlib pyarrow huggingface_hub torch torchvision
-pip install lerobot  # For dataset loading
+pip install lerobot tensorflow dlimp # For dataset loading
 ```
 
 ## Quick Start
