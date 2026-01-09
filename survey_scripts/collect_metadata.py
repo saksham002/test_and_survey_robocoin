@@ -124,11 +124,13 @@ def extract_robot_type_from_repo_id(repo_id: str) -> str:
     return robot_type
 
 
-def get_null_subtask_indices(repo_id: str) -> Optional[int]:
-    """Download subtask_annotations.jsonl and find indices where subtask == 'null'.
+def get_subtask_info(repo_id: str) -> Tuple[Optional[int], Dict[int, str]]:
+    """Download subtask_annotations.jsonl and extract null index and subtask mapping.
     
     Returns:
-        Set of null subtask indices, or None if file doesn't exist.
+        Tuple of (null_index, subtask_mapping) where:
+        - null_index: The index of the null subtask, or None if file doesn't exist
+        - subtask_mapping: Dict mapping subtask_index -> subtask_name
     """
     try:
         annotations_path = hf_hub_download(
@@ -137,33 +139,37 @@ def get_null_subtask_indices(repo_id: str) -> Optional[int]:
             repo_type="dataset"
         )
         null_indices = set()
+        subtask_mapping = {}
         with open(annotations_path, 'r', encoding='utf-8') as f:
             for line in f:
                 if not line.strip():
                     continue
                 data = json.loads(line)
+                subtask_mapping[data["subtask_index"]] = data["subtask"]
                 if data["subtask"] == "null":
                     null_indices.add(data["subtask_index"])
         assert len(null_indices) == 1, "Multiple null subtask indices found"
-        return next(iter(null_indices))
+        return next(iter(null_indices)), subtask_mapping
     except Exception:
-        return None
+        return None, {}
 
 
-def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[float], bool]:
+def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[float], bool, List[Tuple[float, float, str]]]:
     """Extract subtask lengths from the first episode by downloading only episode_000000.parquet.
     
     Tracks multiple concurrent subtasks per row. When a subtask leaves the active set,
     its length (in steps) is recorded.
     
     Returns:
-        Tuple of (subtask_steps, subtask_lengths_seconds, has_concurrent_transition)
-        where has_concurrent_transition is True if condition on line 202 was met
+        Tuple of (subtask_steps, subtask_lengths_seconds, has_concurrent_transition, subtask_timeline)
+        where:
+        - has_concurrent_transition is True if concurrent subtask transition was detected
+        - subtask_timeline is a list of (start_time, end_time, subtask_names) for summary.txt
     """
-    # First get the null subtask index
-    null_index = get_null_subtask_indices(repo_id)
+    # First get the null subtask index and subtask mapping
+    null_index, subtask_mapping = get_subtask_info(repo_id)
     if null_index is None:
-        return [], [], False
+        return [], [], False, []
     
     try:
         # Download only the first episode's parquet file
@@ -180,12 +186,30 @@ def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[flo
         subtask_steps = []
         current_subtasks = set()  # Set of currently active subtasks
         subtask_counts = {}  # Maps subtask -> count
-        has_concurrent_transition = False  # Track if condition on line 202 is met
+        has_concurrent_transition = False  # Track if concurrent transition detected
         
-        for annotation in subtask_annotations:
+        # For building the timeline
+        subtask_timeline = []  # List of (start_time, end_time, subtask_names)
+        interval_start_step = 0
+        prev_subtasks = None
+        
+        for step_idx, annotation in enumerate(subtask_annotations):
             # annotation is an array of length 5 containing subtask indices
             # Filter out null index to get all valid subtasks
             valid_subtasks = set(s for s in annotation if s != null_index)
+            
+            # Check if the set of active subtasks changed (for timeline)
+            if prev_subtasks is not None and valid_subtasks != prev_subtasks:
+                # Record the previous interval
+                start_time = interval_start_step / fps if fps > 0 else 0
+                end_time = step_idx / fps if fps > 0 else 0
+                # Sort by subtask index and get names
+                sorted_indices = sorted(prev_subtasks)
+                subtask_names = ", ".join(subtask_mapping[idx] for idx in sorted_indices)
+                subtask_timeline.append((start_time, end_time, subtask_names))
+                interval_start_step = step_idx
+            
+            prev_subtasks = valid_subtasks
             
             # Find subtasks that ended (were in current but not in new)
             ended_subtasks = current_subtasks - valid_subtasks
@@ -208,9 +232,18 @@ def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[flo
                 
             current_subtasks = valid_subtasks
         
+        # Don't forget the last interval for timeline
+        if prev_subtasks is not None and len(prev_subtasks) > 0:
+            start_time = interval_start_step / fps if fps > 0 else 0
+            end_time = len(subtask_annotations) / fps if fps > 0 else 0
+            sorted_indices = sorted(prev_subtasks)
+            subtask_names = ", ".join(subtask_mapping[idx] for idx in sorted_indices)
+            subtask_timeline.append((start_time, end_time, subtask_names))
+        
         # Don't forget subtasks still active at the end
         for subtask in current_subtasks:
-            subtask_steps.append(subtask_counts[subtask])        
+            subtask_steps.append(subtask_counts[subtask])
+        
         # Convert to seconds
         subtask_lengths_sec = [s / fps for s in subtask_steps] if fps > 0 else []
         
@@ -229,10 +262,10 @@ def extract_subtask_lengths(repo_id: str, fps: int) -> Tuple[List[int], List[flo
         except Exception:
             pass  # Ignore cleanup errors
         
-        return subtask_steps, subtask_lengths_sec, has_concurrent_transition
+        return subtask_steps, subtask_lengths_sec, has_concurrent_transition, subtask_timeline
         
     except Exception:
-        return [], [], False
+        return [], [], False, []
 
 
 def select_camera_for_video(camera_names: List[str]) -> Optional[str]:
@@ -279,13 +312,19 @@ def select_camera_for_video(camera_names: List[str]) -> Optional[str]:
     return None
 
 
-def save_example_video_and_annotations(repo_id: str, camera_name: str, examples_dir: Path) -> None:
-    """Download and save video and annotation files for a repo.
+def save_example_video_and_annotations(
+    repo_id: str, 
+    camera_name: str, 
+    examples_dir: Path,
+    subtask_timeline: List[Tuple[float, float, str]]
+) -> None:
+    """Download and save video, subtask_annotations.jsonl, and summary.txt for a repo.
     
     Args:
         repo_id: Repository ID
         camera_name: Selected camera name
         examples_dir: Directory to save files to
+        subtask_timeline: List of (start_time, end_time, subtask_names) for summary
     """
     try:
         # Create repo-specific subdirectory (remove RoboCOIN_ prefix if present)
@@ -316,57 +355,77 @@ def save_example_video_and_annotations(repo_id: str, camera_name: str, examples_
         except Exception as e:
             print(f"  Warning: Could not download video: {e}")
         
-        # Download subtask_annotations.jsonl
-        try:
-            annotations_path = hf_hub_download(
-                repo_id=repo_id,
-                filename="annotations/subtask_annotations.jsonl",
-                repo_type="dataset"
-            )
-            annotations_dest = repo_dir / "subtask_annotations.jsonl"
-            shutil.copy2(annotations_path, annotations_dest)
-            print(f"  Saved subtask_annotations.jsonl to {annotations_dest}")
-        except Exception as e:
-            print(f"  Warning: Could not download subtask_annotations.jsonl: {e}")
-        
-        # Download scene_annotations.jsonl
-        try:
-            scene_annotations_path = hf_hub_download(
-                repo_id=repo_id,
-                filename="annotations/scene_annotations.jsonl",
-                repo_type="dataset"
-            )
-            scene_annotations_dest = repo_dir / "scene_annotations.jsonl"
-            shutil.copy2(scene_annotations_path, scene_annotations_dest)
-            print(f"  Saved scene_annotations.jsonl to {scene_annotations_dest}")
-        except Exception as e:
-            print(f"  Warning: Could not download scene_annotations.jsonl: {e}")
-        
-        # Download meta/episodes.jsonl
+        # Download and save episodes.jsonl, also get task description
+        task_description = "N/A"
         try:
             episodes_path = hf_hub_download(
                 repo_id=repo_id,
                 filename="meta/episodes.jsonl",
                 repo_type="dataset"
             )
+            # Save the file
             episodes_dest = repo_dir / "episodes.jsonl"
             shutil.copy2(episodes_path, episodes_dest)
             print(f"  Saved episodes.jsonl to {episodes_dest}")
+            
+            # Get task description from episode_index = 0
+            with open(episodes_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    data = json.loads(line)
+                    if data.get("episode_index") == 0:
+                        tasks = data.get("tasks", [])
+                        if tasks and len(tasks) > 0:
+                            task_description = tasks[0]
+                        break
         except Exception as e:
             print(f"  Warning: Could not download episodes.jsonl: {e}")
         
-        # Download meta/tasks.jsonl
+        # Download and save scene_annotations.jsonl, also get scene description
+        scene_description = "N/A"
         try:
-            tasks_path = hf_hub_download(
+            scene_path = hf_hub_download(
                 repo_id=repo_id,
-                filename="meta/tasks.jsonl",
+                filename="annotations/scene_annotations.jsonl",
                 repo_type="dataset"
             )
-            tasks_dest = repo_dir / "tasks.jsonl"
-            shutil.copy2(tasks_path, tasks_dest)
-            print(f"  Saved tasks.jsonl to {tasks_dest}")
+            # Save the file
+            scene_dest = repo_dir / "scene_annotations.jsonl"
+            shutil.copy2(scene_path, scene_dest)
+            print(f"  Saved scene_annotations.jsonl to {scene_dest}")
+            
+            # Get scene description from scene_index = 0
+            with open(scene_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    data = json.loads(line)
+                    if data.get("scene_index") == 0:
+                        scene_description = data.get("scene", "N/A")
+                        break
         except Exception as e:
-            print(f"  Warning: Could not download tasks.jsonl: {e}")
+            print(f"  Warning: Could not download scene_annotations.jsonl: {e}")
+        
+        # Create summary.txt
+        try:
+            summary_path = repo_dir / "summary.txt"
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                # Sub-Task Level Annotations
+                f.write("Sub-Task Level Annotations\n")
+                for idx, (start_time, end_time, subtask_names) in enumerate(subtask_timeline, 1):
+                    f.write(f"{idx}. {start_time:.2f}s - {end_time:.2f}s - {subtask_names}\n")
+                
+                f.write("\n")
+                
+                # Trajectory Level Annotations
+                f.write("Trajectory Level Annotations\n")
+                f.write(f"1. Task Description - {task_description}\n")
+                f.write(f"2. Scene Description - {scene_description}\n")
+            
+            print(f"  Saved summary.txt to {summary_path}")
+        except Exception as e:
+            print(f"  Warning: Could not create summary.txt: {e}")
             
     except Exception as e:
         print(f"  Error saving example files: {e}")
@@ -595,8 +654,9 @@ def main():
             
             # Extract subtask lengths from first episode
             has_concurrent_transition = False
+            subtask_timeline = []
             try:
-                repo_subtask_steps, repo_subtask_lengths, has_concurrent_transition = extract_subtask_lengths(repo_id, global_fps)
+                repo_subtask_steps, repo_subtask_lengths, has_concurrent_transition, subtask_timeline = extract_subtask_lengths(repo_id, global_fps)
                 if repo_subtask_steps:
                     subtask_steps.extend(repo_subtask_steps)
                     subtask_lengths_seconds.extend(repo_subtask_lengths)
@@ -618,7 +678,7 @@ def main():
                 selected_camera = select_camera_for_video(camera_names)
                 if selected_camera:
                     print(f"  Saving example video and annotations (camera: {selected_camera})...")
-                    save_example_video_and_annotations(repo_id, selected_camera, EXAMPLES_DIR)
+                    save_example_video_and_annotations(repo_id, selected_camera, EXAMPLES_DIR, subtask_timeline)
                     examples_saved_count += 1
                 else:
                     print(f"  Warning: Could not select camera for video, skipping example save")

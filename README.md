@@ -54,14 +54,14 @@ Main script that surveys all RoboCOIN datasets and produces:
 - `survey_scripts/stats/subtask_length_quantiles.json` - Subtask length distribution (seconds)
 - `survey_scripts/stats/subtask_steps_quantiles.json` - Subtask length distribution (steps)
 - `survey_scripts/plots/` - Histograms of episode and subtask length distributions
-- `survey_scripts/examples/` - Example videos and annotation files for selected repos
+- `survey_scripts/examples/` - Example videos, episodes.jsonl, scene_annotations.jsonl, and summary.txt for selected repos
 
 **Features:**
 - Extracts robot type from repo_id
 - Computes running statistics using Welford's algorithm for numerical stability
 - Handles multiple embodiment variants (same robot type with different state dimensions)
 - Tracks subtask transitions with concurrent subtask support
-- Saves example videos for repos meeting specific conditions
+- Saves example videos, annotation files, and a summary file describing subtask transitions for repos meeting specific conditions (concurrent subtask transitions or episodes > 1 minute)
 
 ```bash
 python survey_scripts/collect_metadata.py
@@ -155,8 +155,20 @@ survey_scripts/
 └── examples/                          # Example videos and annotations
     └── <dataset>/                     # Dataset name without RoboCOIN_ prefix
         ├── episode_000000_<camera>.mp4
-        ├── subtask_annotations.jsonl
-        ├── scene_annotations.jsonl
         ├── episodes.jsonl
-        └── tasks.jsonl
+        ├── scene_annotations.jsonl
+        └── summary.txt                # Sub-task and trajectory level annotations
+```
+
+### Example `summary.txt` Format
+
+```
+Sub-Task Level Annotations
+1. 0.00s - 2.50s - pick up object
+2. 2.50s - 5.00s - move to target, pick up object
+3. 5.00s - 8.33s - place object
+
+Trajectory Level Annotations
+1. Task Description - Pick and place the red block
+2. Scene Description - Kitchen counter with various objects
 ```
