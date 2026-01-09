@@ -25,7 +25,7 @@ robocoin/
 ├── sbatch_scripts/         # SLURM job scripts
 │   ├── test_pytorch_dataloader.sh
 │   └── test_dlimp_dataloader.sh
-└── logs/                   # Output logs and examples
+└── logs/                   # Output logs
 ```
 
 ## Scripts
@@ -54,7 +54,7 @@ Main script that surveys all RoboCOIN datasets and produces:
 - `survey_scripts/stats/subtask_length_quantiles.json` - Subtask length distribution (seconds)
 - `survey_scripts/stats/subtask_steps_quantiles.json` - Subtask length distribution (steps)
 - `survey_scripts/plots/` - Histograms of episode and subtask length distributions
-- `logs/examples/` - Example videos and subtask annotations
+- `survey_scripts/examples/` - Example videos and annotation files for selected repos
 
 **Features:**
 - Extracts robot type from repo_id
@@ -147,15 +147,16 @@ survey_scripts/
 │   ├── episode_steps_quantiles.json   # Episode length stats (steps)
 │   ├── subtask_length_quantiles.json  # Subtask length stats (seconds)
 │   └── subtask_steps_quantiles.json   # Subtask length stats (steps)
-└── plots/
-    ├── episode_lengths_histogram.png
-    ├── episode_steps_histogram.png
-    ├── subtask_lengths_histogram.png
-    └── subtask_steps_histogram.png
-
-logs/
+├── plots/
+│   ├── episode_lengths_histogram.png
+│   ├── episode_steps_histogram.png
+│   ├── subtask_lengths_histogram.png
+│   └── subtask_steps_histogram.png
 └── examples/                          # Example videos and annotations
-    └── RoboCOIN_<dataset>/
+    └── <dataset>/                     # Dataset name without RoboCOIN_ prefix
         ├── episode_000000_<camera>.mp4
-        └── subtask_annotations.jsonl
+        ├── subtask_annotations.jsonl
+        ├── scene_annotations.jsonl
+        ├── episodes.jsonl
+        └── tasks.jsonl
 ```

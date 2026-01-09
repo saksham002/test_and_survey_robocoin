@@ -1,0 +1,6 @@
+Torch Dataloader:
+1. Time Taken to Get First Batch - 4.2s
+2. Total Iteration Time - 1800.39s
+3. CPU cores = 12, memory = 192GB, resize + normalize images, pad state/action
+
+DLiMP Dataloader:

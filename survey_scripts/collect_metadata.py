@@ -25,7 +25,7 @@ import pdb
 PREFIX = "RoboCOIN/"
 OUTPUT_DIR = Path(__file__).parent / "stats"
 PLOTS_DIR = Path(__file__).parent / "plots"
-EXAMPLES_DIR = Path(__file__).parent.parent / "logs" / "examples"
+EXAMPLES_DIR = Path(__file__).parent / "examples"
 
 # Keys to track for normalization statistics
 STAT_KEYS = ["observation.state", "action", "eef_sim_pose_state", "eef_sim_pose_action"]
@@ -280,7 +280,7 @@ def select_camera_for_video(camera_names: List[str]) -> Optional[str]:
 
 
 def save_example_video_and_annotations(repo_id: str, camera_name: str, examples_dir: Path) -> None:
-    """Download and save video and subtask_annotations.jsonl for a repo.
+    """Download and save video and annotation files for a repo.
     
     Args:
         repo_id: Repository ID
@@ -288,8 +288,10 @@ def save_example_video_and_annotations(repo_id: str, camera_name: str, examples_
         examples_dir: Directory to save files to
     """
     try:
-        # Create repo-specific subdirectory
+        # Create repo-specific subdirectory (remove RoboCOIN_ prefix if present)
         repo_safe_name = repo_id.replace("/", "_")
+        if repo_safe_name.startswith("RoboCOIN_"):
+            repo_safe_name = repo_safe_name[len("RoboCOIN_"):]
         repo_dir = examples_dir / repo_safe_name
         repo_dir.mkdir(parents=True, exist_ok=True)
         
@@ -309,8 +311,8 @@ def save_example_video_and_annotations(repo_id: str, camera_name: str, examples_
             # Delete downloaded video from cache
             try:
                 Path(video_download_path).unlink()
-            except Exception:
-                print(f"  Warning: Could not delete video from cache: {e}")
+            except Exception as del_e:
+                print(f"  Warning: Could not delete video from cache: {del_e}")
         except Exception as e:
             print(f"  Warning: Could not download video: {e}")
         
@@ -326,6 +328,45 @@ def save_example_video_and_annotations(repo_id: str, camera_name: str, examples_
             print(f"  Saved subtask_annotations.jsonl to {annotations_dest}")
         except Exception as e:
             print(f"  Warning: Could not download subtask_annotations.jsonl: {e}")
+        
+        # Download scene_annotations.jsonl
+        try:
+            scene_annotations_path = hf_hub_download(
+                repo_id=repo_id,
+                filename="annotations/scene_annotations.jsonl",
+                repo_type="dataset"
+            )
+            scene_annotations_dest = repo_dir / "scene_annotations.jsonl"
+            shutil.copy2(scene_annotations_path, scene_annotations_dest)
+            print(f"  Saved scene_annotations.jsonl to {scene_annotations_dest}")
+        except Exception as e:
+            print(f"  Warning: Could not download scene_annotations.jsonl: {e}")
+        
+        # Download meta/episodes.jsonl
+        try:
+            episodes_path = hf_hub_download(
+                repo_id=repo_id,
+                filename="meta/episodes.jsonl",
+                repo_type="dataset"
+            )
+            episodes_dest = repo_dir / "episodes.jsonl"
+            shutil.copy2(episodes_path, episodes_dest)
+            print(f"  Saved episodes.jsonl to {episodes_dest}")
+        except Exception as e:
+            print(f"  Warning: Could not download episodes.jsonl: {e}")
+        
+        # Download meta/tasks.jsonl
+        try:
+            tasks_path = hf_hub_download(
+                repo_id=repo_id,
+                filename="meta/tasks.jsonl",
+                repo_type="dataset"
+            )
+            tasks_dest = repo_dir / "tasks.jsonl"
+            shutil.copy2(tasks_path, tasks_dest)
+            print(f"  Saved tasks.jsonl to {tasks_dest}")
+        except Exception as e:
+            print(f"  Warning: Could not download tasks.jsonl: {e}")
             
     except Exception as e:
         print(f"  Error saving example files: {e}")
